@@ -104,6 +104,14 @@ class Connectivity3DWidget(ipywidgets.VBox, TVBWidgetPOC):
         self._left_idx  = None    # uint32 indices of left-hemi regions
         self._right_idx = None    # uint32 indices of right-hemi regions
 
+        # Hub-sizing state (set by _render_connectivity)
+        self._node_sizes     = None   # float32 (N,) per-node sizes [4, 18]
+        self._node_strengths = None   # float64 (N,) normalised row-sum
+        self._node_colors_base = None # uint32 (N,) viridis colors
+
+        # Label toggle state
+        self._k3d_labels = []   # list of active k3d.text objects in the plot
+
         # ----------------------------------------------------------------
         # k3d plot
         # ----------------------------------------------------------------
@@ -236,11 +244,18 @@ class Connectivity3DWidget(ipywidgets.VBox, TVBWidgetPOC):
             style={'description_width': '80px', 'button_width': '70px'},
             layout=ipywidgets.Layout(width='310px'),
         )
+        self._label_toggle = ipywidgets.ToggleButton(
+            value=False,
+            description='Labels',
+            icon='tag',
+            layout=ipywidgets.Layout(width='100px', height='32px'),
+        )
         self._info_label = ipywidgets.HTML(
             value='<span style="color:#888; font-size:12px;">No connectivity loaded.</span>'
         )
         row2 = ipywidgets.HBox(
-            [self._colormap_dropdown, self._hemisphere_toggle, self._info_label]
+            [self._colormap_dropdown, self._hemisphere_toggle,
+             self._label_toggle, self._info_label]
         )
 
         # --- Header -----------------------------------------------------
@@ -253,6 +268,7 @@ class Connectivity3DWidget(ipywidgets.VBox, TVBWidgetPOC):
         self._node_size_slider.observe(self._on_node_size_change,   names='value')
         self._colormap_dropdown.observe(self._on_colormap_change,   names='value')
         self._hemisphere_toggle.observe(self._on_hemisphere_change, names='value')
+        self._label_toggle.observe(self._on_label_toggle,           names='value')
 
         return ipywidgets.VBox(
             [header, row1, row2],
@@ -315,38 +331,46 @@ class Connectivity3DWidget(ipywidgets.VBox, TVBWidgetPOC):
         self._apply_edge_mask(mask)
 
     def _on_node_size_change(self, change):
-        """Live-update the diameter of all brain-region spheres."""
-        if self._k3d_points is None:
+        """Live-scale all node sizes while preserving relative hub/peripheral sizing."""
+        if self._k3d_points is None or self._node_sizes is None:
             return
-        self._k3d_points.point_size = change['new']
+        # Scale the stored per-node size array by a multiplier relative to
+        # the slider's baseline of 8.0 — preserves hub > peripheral hierarchy.
+        scale = change['new'] / 8.0
+        self._k3d_points.point_sizes = (self._node_sizes * scale).astype(numpy.float32)
 
     def _on_colormap_change(self, change):
         """
         Recolour nodes and edges using the selected matplotlib colormap.
 
-        Nodes: single representative color per colormap (stored in
-        ``_CMAP_NODE_COLORS``).
+        Nodes: per-node colors derived from node_strength mapped through
+        the chosen colormap, updating _node_colors_base for live consistency.
 
-        Edges: per-vertex colors derived from ``_weights_norm`` passed
-        through the selected colormap. k3d.lines `colors` is per-vertex
-        (one uint32 per entry in the `vertices` array, i.e. 76 values for
-        76 brain regions).  We use the mean normalised weight of all edges
-        incident to each region as the per-vertex value.
+        Edges: per-vertex colors derived from mean incident-edge weight
+        per region. k3d.lines `colors` is per-VERTEX (76 values).
         """
         if self._k3d_points is None or self._k3d_lines is None:
             return
 
         cmap_name = change['new']
+        cmap = plt.get_cmap(cmap_name)
 
-        # Node color — representative solid color per palette
-        node_color = _CMAP_NODE_COLORS.get(cmap_name, 0x6aa84f)
-        self._k3d_points.color = node_color
+        # --- Node colors from node strength ---------------------------------
+        if self._node_strengths is not None:
+            rgba_n = cmap(self._node_strengths)              # (N, 4) float
+            r_n = (rgba_n[:, 0] * 255).astype(numpy.uint32)
+            g_n = (rgba_n[:, 1] * 255).astype(numpy.uint32)
+            b_n = (rgba_n[:, 2] * 255).astype(numpy.uint32)
+            node_colors = numpy.array(
+                (r_n << 16) | (g_n << 8) | b_n, dtype=numpy.uint32
+            )
+            self._node_colors_base = node_colors
+            self._k3d_points.colors = node_colors
+        else:
+            node_color = _CMAP_NODE_COLORS.get(cmap_name, 0x6aa84f)
+            self._k3d_points.color = node_color
 
-        # Edge per-vertex coloring via matplotlib colormap.
-        # k3d.lines `colors` is per-VERTEX (one uint32 per entry in the
-        # vertices array = 76 for 76 brain regions, not per-edge).
-        # We use mean normalised incident-edge weight per region as the
-        # per-vertex colour value.
+        # --- Edge per-vertex colors from mean incident weight ---------------
         n_regions = self.connectivity.number_of_regions
         vertex_weights = numpy.zeros(n_regions, dtype=numpy.float64)
         counts = numpy.zeros(n_regions, dtype=numpy.int64)
@@ -362,18 +386,18 @@ class Connectivity3DWidget(ipywidgets.VBox, TVBWidgetPOC):
         mask_nonzero = counts > 0
         vertex_weights[mask_nonzero] /= counts[mask_nonzero]
 
-        cmap = plt.get_cmap(cmap_name)
-        rgba = cmap(vertex_weights)                            # (76, 4) float 0-1
-        r_ch = (rgba[:, 0] * 255).astype(numpy.uint32)
-        g_ch = (rgba[:, 1] * 255).astype(numpy.uint32)
-        b_ch = (rgba[:, 2] * 255).astype(numpy.uint32)
+        rgba_e = cmap(vertex_weights)                        # (76, 4) float
+        r_ch = (rgba_e[:, 0] * 255).astype(numpy.uint32)
+        g_ch = (rgba_e[:, 1] * 255).astype(numpy.uint32)
+        b_ch = (rgba_e[:, 2] * 255).astype(numpy.uint32)
         colors_uint32 = numpy.array(
             (r_ch << 16) | (g_ch << 8) | b_ch, dtype=numpy.uint32
-        )                                                      # (76,) uint32
+        )                                                    # (76,) uint32
 
         self._k3d_lines.colors = colors_uint32
 
-        self.logger.debug(f"Colormap changed to '{cmap_name}'.")
+        self.logger.debug(f"Colormap changed to '{cmap_name}'."
+    )
 
     def _on_hemisphere_change(self, change):
         """Show Left, Right, or Both hemispheres — filters nodes and edges."""
@@ -408,6 +432,33 @@ class Connectivity3DWidget(ipywidgets.VBox, TVBWidgetPOC):
         self._apply_edge_mask(mask)
 
         self.logger.debug(f"Hemisphere filter set to '{hemi}'.")
+
+    def _on_label_toggle(self, change):
+        """Show or hide region labels for the top-10 hub nodes."""
+        if self._k3d_points is None or self._node_strengths is None:
+            return
+
+        if change['new']:
+            # Show labels for top-10 hub regions (highest normalised strength)
+            top_hub_indices = numpy.argsort(self._node_strengths)[-10:]
+            for idx in top_hub_indices:
+                pos = self._to_float32(self.connectivity.centres[idx])
+                label = k3d.text(
+                    str(self.connectivity.region_labels[idx]),
+                    position=tuple(float(x) for x in pos),
+                    color=0xffffff,
+                    size=0.5,
+                    label_box=False,
+                    name=f'label_{idx}',
+                )
+                self.plot += label
+                self._k3d_labels.append(label)
+            self.logger.debug(f"Labels shown for {len(self._k3d_labels)} hub regions.")
+        else:
+            for label in self._k3d_labels:
+                self.plot -= label
+            self._k3d_labels = []
+            self.logger.debug("Labels cleared.")
 
     # ====================================================================
     # Internal helpers
@@ -478,12 +529,32 @@ class Connectivity3DWidget(ipywidgets.VBox, TVBWidgetPOC):
 
         centres_f32 = self._to_float32(self.connectivity.centres)
 
-        # ---- Nodes -------------------------------------------------------
+        # ---- Nodes — hub-sized and viridis-coloured by node strength ------
+        node_strength = self.connectivity.weights.sum(axis=1)   # (N,) float64
+        strength_norm = (
+            (node_strength - node_strength.min())
+            / (node_strength.max() - node_strength.min() + 1e-8)
+        )                                                        # (N,) in [0,1]
+        node_sizes = (4.0 + strength_norm * 14.0).astype(numpy.float32)  # [4, 18]
+        self._node_sizes     = node_sizes
+        self._node_strengths = strength_norm
+
+        # Per-node viridis colors from node strength
+        cmap_init = plt.get_cmap('viridis')
+        rgba_init = cmap_init(strength_norm)                     # (N, 4)
+        r_i = (rgba_init[:, 0] * 255).astype(numpy.uint32)
+        g_i = (rgba_init[:, 1] * 255).astype(numpy.uint32)
+        b_i = (rgba_init[:, 2] * 255).astype(numpy.uint32)
+        node_colors = numpy.array(
+            (r_i << 16) | (g_i << 8) | b_i, dtype=numpy.uint32
+        )                                                        # (N,) uint32
+        self._node_colors_base = node_colors
+
         points = k3d.points(
             positions=centres_f32,
-            point_size=self._node_size_slider.value,
+            point_sizes=node_sizes,          # per-node hub sizing
+            colors=node_colors,              # per-node viridis coloring
             shader='3dSpecular',
-            color=_CMAP_NODE_COLORS['viridis'],
             name='BrainRegions',
         )
         self._k3d_points = points
