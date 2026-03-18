@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "tvbwidgets-poc"
+version = "0.1.0"
+description = "GSoC 2026 PoC: New 3D graphical widgets for TVB JupyterLab"
+authors = [{name = "YOUR NAME", email = "your-email@example.com"}]  # TODO: fill before submission
+requires-python = ">=3.10"
+dependencies = [
+    "tvb-library",
+    "tvb-data",
+    "k3d",
+    "ipywidgets>=8.0",
+    "numpy",
+    "jupyterlab",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["tvbwidgets_poc*"]
