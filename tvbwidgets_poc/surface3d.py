@@ -1,25 +1,4 @@
 # -*- coding: utf-8 -*-
-#
-# TVB Widgets PoC — GSoC 2026
-# AnimatedSurface3DWidget: cortical surface mesh with animated timeseries overlay.
-#
-# Architecture:
-#   AnimatedSurface3DWidget(ipywidgets.VBox, TVBWidgetPOC)
-#
-# Technical design decisions (Phase 3 research):
-#   TQ1: k3d.mesh requires triangles as uint32. TVB default surface returns
-#        int64 triangles — must convert with .astype(numpy.uint32).
-#   TQ2: mesh.attribute is a live traitlet — mutating it in-place updates the
-#        WebGL render without plot rebuild in k3d 2.16.x. dtype must be float32.
-#   TQ3: CorticalSurface.from_file() → vertices=(16384,3) float64,
-#        triangles=(32760,3) int64. One clean merged surface (both hemispheres).
-#   TQ4: Synthetic timeseries — 8 pseudo-regions with distinct oscillation
-#        frequencies (0.5–2.6 Hz) and staggered phases. float32, shape (120, N).
-#   TQ5: jslink (client-side) synchronises Play ↔ Slider UI without Python
-#        round-trip. A separate Python .observe() on the slider drives the
-#        mesh.attribute mutation (which requires kernel execution).
-#        display() is called ONCE in __init__ on the empty plot; _render_surface
-#        only does self.plot += mesh (adds to the already-live canvas).
 
 import logging
 
@@ -32,9 +11,6 @@ from tvbwidgets_poc.base_widget import TVBWidgetPOC
 
 _logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Diverging colormaps available in k3d.matplotlib_color_maps (all verified)
-# ---------------------------------------------------------------------------
 _DIVERGING_CMAPS = ['coolwarm', 'RdBu', 'seismic', 'bwr', 'PRGn']
 
 
@@ -72,9 +48,6 @@ class AnimatedSurface3DWidget(ipywidgets.VBox, TVBWidgetPOC):
     """
 
     def __init__(self, surface=None, timeseries=None, width=1000, height=600, **kwargs):
-        # ----------------------------------------------------------------
-        # Output container
-        # ----------------------------------------------------------------
         self.output = ipywidgets.Output(
             layout=ipywidgets.Layout(
                 width=str(width) + 'px',
@@ -82,61 +55,36 @@ class AnimatedSurface3DWidget(ipywidgets.VBox, TVBWidgetPOC):
             )
         )
 
-        # ----------------------------------------------------------------
-        # TVBWidgetPOC.__init__ — sets self.logger
-        # ----------------------------------------------------------------
         TVBWidgetPOC.__init__(self)
 
-        # ----------------------------------------------------------------
-        # Data and render state
-        # ----------------------------------------------------------------
         self.surface     = None
         self.timeseries  = None
         self._k3d_mesh   = None
         self._current_frame = 0
         self._is_playing    = False
 
-        # ----------------------------------------------------------------
-        # k3d plot — display() called ONCE here on the empty plot.
-        # _render_surface() never calls display() again; it only does
-        # self.plot += mesh which updates the already-live canvas.
-        # ----------------------------------------------------------------
         self.plot = k3d.plot(
             grid_visible=False,
             background_color=self.PLOT_BG_COLOR,
         )
 
-        # ----------------------------------------------------------------
-        # Controls (built before VBox init so children list is complete)
-        # ----------------------------------------------------------------
         self._controls = self._build_controls()
 
-        # ----------------------------------------------------------------
-        # VBox: controls above the 3D viewport
-        # ----------------------------------------------------------------
         super(AnimatedSurface3DWidget, self).__init__(
             children=[self._controls, self.output],
             layout=ipywidgets.Layout(**self.DEFAULT_BORDER),
             **kwargs,
         )
 
-        # Render the empty k3d canvas into the Output widget
         with self.output:
             self.plot.display()
 
-        # ----------------------------------------------------------------
-        # Load data if provided at construction time
-        # ----------------------------------------------------------------
         if surface is not None:
             self.add_datatype(surface, timeseries)
 
         self.logger.debug(
             f"AnimatedSurface3DWidget initialised (width={width}, height={height})."
         )
-
-    # ====================================================================
-    # Public API
-    # ====================================================================
 
     def add_datatype(self, surface, timeseries=None):
         # type: (CorticalSurface, numpy.ndarray | None) -> None
@@ -158,7 +106,6 @@ class AnimatedSurface3DWidget(ipywidgets.VBox, TVBWidgetPOC):
             self.logger.error("Invalid surface: vertices must have shape (N, 3).")
             return
 
-        # configure() computes derived attributes; safe to call multiple times
         surface.configure()
         self.surface  = surface
         n_vertices    = len(surface.vertices)
@@ -183,10 +130,6 @@ class AnimatedSurface3DWidget(ipywidgets.VBox, TVBWidgetPOC):
 
         self._render_surface()
         self._update_controls_state(enabled=True)
-
-    # ====================================================================
-    # Synthetic timeseries generator
-    # ====================================================================
 
     def _generate_synthetic_timeseries(self, n_frames=120):
         """
@@ -236,10 +179,6 @@ class AnimatedSurface3DWidget(ipywidgets.VBox, TVBWidgetPOC):
         )
         return timeseries
 
-    # ====================================================================
-    # Core rendering (called once by add_datatype)
-    # ====================================================================
-
     def _render_surface(self):
         """
         Build the k3d mesh with the first frame as initial attribute data
@@ -250,8 +189,6 @@ class AnimatedSurface3DWidget(ipywidgets.VBox, TVBWidgetPOC):
         """
         self.logger.debug("Rendering cortical surface mesh…")
 
-        # TQ1: k3d.mesh requires float32 vertices and uint32 triangle indices.
-        # TVB default: vertices=float64 → _to_float32(), triangles=int64 → uint32.
         vertices  = self._to_float32(self.surface.vertices)
         triangles = self.surface.triangles.astype(numpy.uint32)
 
@@ -272,17 +209,12 @@ class AnimatedSurface3DWidget(ipywidgets.VBox, TVBWidgetPOC):
             name='CorticalSurface',
         )
 
-        # Add to the live plot — updates the already-displayed canvas in-place
         self.plot += self._k3d_mesh
 
         self.logger.info(
             f"Mesh rendered: {len(vertices)} vertices, {len(triangles)} triangles, "
             f"attribute dtype={first_frame.dtype}."
         )
-
-    # ====================================================================
-    # Control panel builder
-    # ====================================================================
 
     def _build_controls(self):
         """
@@ -294,7 +226,6 @@ class AnimatedSurface3DWidget(ipywidgets.VBox, TVBWidgetPOC):
         ``mesh.attribute`` — this MUST run in the Python kernel.
         ``jslink`` alone cannot mutate Python objects, hence both are needed.
         """
-        # ---- Row 1: Playback -------------------------------------------
         n_frames = 120    # default; updated when data loads if different
 
         self._play = ipywidgets.Play(
@@ -310,17 +241,11 @@ class AnimatedSurface3DWidget(ipywidgets.VBox, TVBWidgetPOC):
             disabled=True,
         )
 
-        # jslink: client-side bidirectional sync (Play ↔ Slider) —
-        # no kernel round-trip, so the counter increments smoothly even
-        # if Python is busy processing a previous frame.
         ipywidgets.jslink((self._play, 'value'), (self._frame_slider, 'value'))
-
-        # Python observer: drives the actual k3d mesh update (kernel-side)
         self._frame_slider.observe(self._on_frame_change, names='value')
 
         row1 = ipywidgets.HBox([self._play, self._frame_slider])
 
-        # ---- Row 2: Appearance -----------------------------------------
         self._colormap_dropdown = ipywidgets.Dropdown(
             description='Colormap',
             options=_DIVERGING_CMAPS,
@@ -345,7 +270,6 @@ class AnimatedSurface3DWidget(ipywidgets.VBox, TVBWidgetPOC):
             [self._colormap_dropdown, self._speed_slider, self._frame_label]
         )
 
-        # ---- Header ----------------------------------------------------
         header = ipywidgets.HTML(
             value='<b style="font-size:13px; color:#555;">Surface Animation Controls</b>'
         )
@@ -354,10 +278,6 @@ class AnimatedSurface3DWidget(ipywidgets.VBox, TVBWidgetPOC):
             [header, row1, row2],
             layout=ipywidgets.Layout(padding='8px', border='1px solid #ddd'),
         )
-
-    # ====================================================================
-    # Callbacks
-    # ====================================================================
 
     def _on_frame_change(self, change):
         """
@@ -372,7 +292,6 @@ class AnimatedSurface3DWidget(ipywidgets.VBox, TVBWidgetPOC):
 
         frame = change['new']
         self._current_frame  = frame
-        # In-place traitlet assignment — WebGL re-renders the colormap
         self._k3d_mesh.attribute = self.timeseries[frame]
         self._frame_label.value  = (
             f'<span style="font-size:12px;">'
@@ -390,12 +309,7 @@ class AnimatedSurface3DWidget(ipywidgets.VBox, TVBWidgetPOC):
 
     def _on_speed_change(self, change):
         """Adjust playback speed by mutating Play.interval (ms per frame)."""
-        # Base interval 83 ms (≈12 fps). Speed 2.0 → 41 ms (≈24 fps).
         self._play.interval = int(83 / change['new'])
-
-    # ====================================================================
-    # Internal helpers
-    # ====================================================================
 
     def _update_controls_state(self, enabled):
         """
@@ -409,7 +323,6 @@ class AnimatedSurface3DWidget(ipywidgets.VBox, TVBWidgetPOC):
 
         if enabled and self.timeseries is not None:
             n_frames = len(self.timeseries)
-            # Sync slider/play range to actual frame count
             self._play.max         = n_frames - 1
             self._frame_slider.max = n_frames - 1
             self._frame_label.value = (

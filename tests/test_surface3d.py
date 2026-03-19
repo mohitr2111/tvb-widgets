@@ -26,9 +26,6 @@ def widget(surf):
     return AnimatedSurface3DWidget(surf)
 
 
-# ---------------------------------------------------------------------------
-# Test 1
-# ---------------------------------------------------------------------------
 def test_widget_instantiates_with_surface(surf):
     """Widget must render successfully when given a valid surface."""
     w = AnimatedSurface3DWidget(surf)
@@ -37,9 +34,6 @@ def test_widget_instantiates_with_surface(surf):
     assert w._k3d_mesh is not None
 
 
-# ---------------------------------------------------------------------------
-# Test 2
-# ---------------------------------------------------------------------------
 def test_synthetic_timeseries_shape_and_dtype(widget, surf):
     """Synthetic timeseries must be (120, N_vertices) float32 with sane range."""
     n_vertices = len(surf.vertices)
@@ -53,9 +47,6 @@ def test_synthetic_timeseries_shape_and_dtype(widget, surf):
     assert widget.timeseries.max() <  2.0, "Timeseries max unexpectedly high"
 
 
-# ---------------------------------------------------------------------------
-# Test 3
-# ---------------------------------------------------------------------------
 def test_custom_timeseries_accepted(surf):
     """Widget must accept and store a user-supplied timeseries correctly."""
     n_vertices = len(surf.vertices)
@@ -70,12 +61,8 @@ def test_custom_timeseries_accepted(surf):
     assert w._play.max == 59, f"Play max should be 59, got {w._play.max}"
 
 
-# ---------------------------------------------------------------------------
-# Test 4
-# ---------------------------------------------------------------------------
 def test_frame_change_updates_mesh_attribute(widget):
     """_on_frame_change must update mesh.attribute to a different frame."""
-    # Capture frame 0 state (must copy — traitlet returns a view)
     frame_0_attr = np.array(widget._k3d_mesh.attribute, copy=True)
 
     widget._on_frame_change({'new': 60})
@@ -89,9 +76,6 @@ def test_frame_change_updates_mesh_attribute(widget):
     widget._on_frame_change({'new': 0})
 
 
-# ---------------------------------------------------------------------------
-# Test 5
-# ---------------------------------------------------------------------------
 def test_speed_change_updates_play_interval(widget):
     """_on_speed_change must correctly mutate Play.interval as int(83/speed)."""
     widget._on_speed_change({'new': 2.0})

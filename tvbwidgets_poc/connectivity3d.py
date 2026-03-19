@@ -1,23 +1,4 @@
 # -*- coding: utf-8 -*-
-#
-# TVB Widgets PoC — GSoC 2026
-# Connectivity3DWidget: interactive 3D brain connectivity visualisation.
-#
-# Architecture:
-#   Connectivity3DWidget(ipywidgets.VBox, TVBWidgetPOC)
-#
-# Phase 1: k3d 3D render — nodes (3dSpecular spheres), edges (uint32-indexed lines)
-# Phase 2: interactive control panel — threshold slider, node-size slider,
-#           colormap dropdown, hemisphere toggle, live info label.
-#
-# k3d live-update API notes (from k3d 2.16.1 source inspection):
-#   RQ1: k3d.lines supports a `colors` attribute — an array of uint32
-#        per-VERTEX (not per-edge), shape (N_vertices,). For segment-mode
-#        lines sharing the vertices array (76 centres), we assign 76 colors —
-#        one per brain region.  When `colors` is set it overrides `color`.
-#   RQ2: For live update of `lines.indices`, the array must be flat uint32
-#        shape (E*2,) — each consecutive pair [i, j] defines one segment.
-#        column_stack(...).flatten() produces this correctly.
 
 import logging
 
@@ -32,9 +13,6 @@ from tvbwidgets_poc.base_widget import TVBWidgetPOC
 
 _logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Colormap → representative single-color mapping for node highlights
-# ---------------------------------------------------------------------------
 _CMAP_NODE_COLORS = {
     'viridis':  0x21918c,
     'plasma':   0xf89540,
@@ -74,10 +52,6 @@ class Connectivity3DWidget(ipywidgets.VBox, TVBWidgetPOC):
     """
 
     def __init__(self, connectivity=None, width=1000, height=600, **kwargs):
-        # ----------------------------------------------------------------
-        # Output container — k3d renders inside here so the canvas sits
-        # correctly within the VBox DOM node (not in raw cell output).
-        # ----------------------------------------------------------------
         self.output = ipywidgets.Output(
             layout=ipywidgets.Layout(
                 width=str(width) + 'px',
@@ -85,14 +59,8 @@ class Connectivity3DWidget(ipywidgets.VBox, TVBWidgetPOC):
             )
         )
 
-        # ----------------------------------------------------------------
-        # TVBWidgetPOC.__init__ — sets self.logger
-        # ----------------------------------------------------------------
         TVBWidgetPOC.__init__(self)
 
-        # ----------------------------------------------------------------
-        # Connectivity data and derived render state
-        # ----------------------------------------------------------------
         self.connectivity = None
         self._k3d_points = None
         self._k3d_lines  = None
@@ -100,16 +68,13 @@ class Connectivity3DWidget(ipywidgets.VBox, TVBWidgetPOC):
         self._edge_cols   = None   # int64 (1560,)
         self._weights_norm = None  # float64 (1560,) ∈ [0, 1]
 
-        # Hemisphere index arrays (built once from region_labels)
         self._left_idx  = None    # uint32 indices of left-hemi regions
         self._right_idx = None    # uint32 indices of right-hemi regions
 
-        # Hub-sizing state (set by _render_connectivity)
         self._node_sizes     = None   # float32 (N,) per-node sizes [4, 18]
         self._node_strengths = None   # float64 (N,) normalised row-sum
         self._node_colors_base = None # uint32 (N,) viridis colors
 
-        # Label toggle state
         self._k3d_labels = []   # list of active k3d.text objects in the plot
 
         # ----------------------------------------------------------------
@@ -120,9 +85,6 @@ class Connectivity3DWidget(ipywidgets.VBox, TVBWidgetPOC):
             background_color=self.PLOT_BG_COLOR,
         )
 
-        # ----------------------------------------------------------------
-        # Build the control panel (widgets only — not wired to data yet)
-        # ----------------------------------------------------------------
         self._controls = self._build_controls()
 
         # ----------------------------------------------------------------
@@ -135,23 +97,15 @@ class Connectivity3DWidget(ipywidgets.VBox, TVBWidgetPOC):
             **kwargs,
         )
 
-        # ----------------------------------------------------------------
-        # Render data if provided at construction time
-        # ----------------------------------------------------------------
         if connectivity is not None:
             self.add_datatype(connectivity)
 
-        # Capture k3d canvas output inside the Output widget
         with self.output:
             self.plot.display()
 
         self.logger.debug(
             f"Connectivity3DWidget initialised (width={width}, height={height})."
         )
-
-    # ====================================================================
-    # Public API
-    # ====================================================================
 
     def add_datatype(self, connectivity):
         # type: (Connectivity) -> None
@@ -166,10 +120,6 @@ class Connectivity3DWidget(ipywidgets.VBox, TVBWidgetPOC):
             f"Connectivity loaded: {self.connectivity.number_of_regions} regions."
         )
 
-        # Pre-compute hemisphere index arrays (needed by callbacks)
-        # TVB 76-region default connectivity uses 'r' prefix for right
-        # hemisphere (indices 0-37) and 'l' prefix for left hemisphere
-        # (indices 38-75). NOT 'rh'/'lh' — confirmed by inspecting labels.
         labels = list(self.connectivity.region_labels)
         self._left_idx  = numpy.array(
             [i for i, lbl in enumerate(labels) if lbl.startswith('l')],
@@ -201,19 +151,10 @@ class Connectivity3DWidget(ipywidgets.VBox, TVBWidgetPOC):
             'region_labels':  list(self.connectivity.region_labels),
         }
 
-    # ====================================================================
-    # Control panel builder
-    # ====================================================================
-
     def _build_controls(self):
         """
         Build and return the ipywidgets control panel VBox.
-
-        Wires all Observer callbacks to the widget controls.
-        Stores control widgets as instance attributes for later access
-        by ``_get_active_mask`` and the callbacks.
         """
-        # --- Row 1: Filtering -------------------------------------------
         self._threshold_slider = ipywidgets.FloatSlider(
             description='Threshold',
             min=0.0, max=1.0, step=0.01, value=0.0,
@@ -228,7 +169,6 @@ class Connectivity3DWidget(ipywidgets.VBox, TVBWidgetPOC):
         )
         row1 = ipywidgets.HBox([self._threshold_slider, self._node_size_slider])
 
-        # --- Row 2: Appearance ------------------------------------------
         self._colormap_dropdown = ipywidgets.Dropdown(
             description='Colormap',
             options=self.COLORMAP_OPTIONS,
@@ -258,12 +198,10 @@ class Connectivity3DWidget(ipywidgets.VBox, TVBWidgetPOC):
              self._label_toggle, self._info_label]
         )
 
-        # --- Header -----------------------------------------------------
         header = ipywidgets.HTML(
             value='<b style="font-size:13px; color:#555;">Connectivity Controls</b>'
         )
 
-        # --- Wire callbacks ---------------------------------------------
         self._threshold_slider.observe(self._on_threshold_change,   names='value')
         self._node_size_slider.observe(self._on_node_size_change,   names='value')
         self._colormap_dropdown.observe(self._on_colormap_change,   names='value')
@@ -274,10 +212,6 @@ class Connectivity3DWidget(ipywidgets.VBox, TVBWidgetPOC):
             [header, row1, row2],
             layout=ipywidgets.Layout(padding='8px', border='1px solid #ddd'),
         )
-
-    # ====================================================================
-    # Combined filter mask
-    # ====================================================================
 
     def _get_active_mask(self, hemi_override=None):
         """
@@ -291,10 +225,6 @@ class Connectivity3DWidget(ipywidgets.VBox, TVBWidgetPOC):
             ``self._hemisphere_toggle.value``.  Required when called from
             inside a callback *before* the widget value has been committed
             (e.g. direct unit-test calls).
-
-        Both ``_on_threshold_change`` and ``_on_hemisphere_change`` call
-        this to avoid duplicating filter logic and to ensure consistent
-        behaviour when both filters are active simultaneously.
         """
         if self._weights_norm is None:
             return None
@@ -303,8 +233,6 @@ class Connectivity3DWidget(ipywidgets.VBox, TVBWidgetPOC):
         threshold = self._threshold_slider.value
         mask = self._weights_norm >= threshold
 
-        # Hemisphere component — use override if provided (needed for
-        # direct callback invocations before toggle.value is committed)
         hemi = hemi_override if hemi_override is not None else self._hemisphere_toggle.value
         if hemi == 'Left':
             # Hide any edge touching the right hemisphere
@@ -318,15 +246,10 @@ class Connectivity3DWidget(ipywidgets.VBox, TVBWidgetPOC):
 
         return mask
 
-    # ====================================================================
-    # Callbacks — all mutate k3d traitlets in-place (no plot rebuild)
-    # ====================================================================
-
     def _on_threshold_change(self, change):
         """Live-filter edges by normalised weight threshold."""
         if self._k3d_lines is None:
             return
-        # No hemi_override needed: threshold slider doesn't change hemisphere
         mask = self._get_active_mask()
         self._apply_edge_mask(mask)
 
@@ -334,20 +257,12 @@ class Connectivity3DWidget(ipywidgets.VBox, TVBWidgetPOC):
         """Live-scale all node sizes while preserving relative hub/peripheral sizing."""
         if self._k3d_points is None or self._node_sizes is None:
             return
-        # Scale the stored per-node size array by a multiplier relative to
-        # the slider's baseline of 8.0 — preserves hub > peripheral hierarchy.
         scale = change['new'] / 8.0
         self._k3d_points.point_sizes = (self._node_sizes * scale).astype(numpy.float32)
 
     def _on_colormap_change(self, change):
         """
         Recolour nodes and edges using the selected matplotlib colormap.
-
-        Nodes: per-node colors derived from node_strength mapped through
-        the chosen colormap, updating _node_colors_base for live consistency.
-
-        Edges: per-vertex colors derived from mean incident-edge weight
-        per region. k3d.lines `colors` is per-VERTEX (76 values).
         """
         if self._k3d_points is None or self._k3d_lines is None:
             return
@@ -355,7 +270,6 @@ class Connectivity3DWidget(ipywidgets.VBox, TVBWidgetPOC):
         cmap_name = change['new']
         cmap = plt.get_cmap(cmap_name)
 
-        # --- Node colors from node strength ---------------------------------
         if self._node_strengths is not None:
             rgba_n = cmap(self._node_strengths)              # (N, 4) float
             r_n = (rgba_n[:, 0] * 255).astype(numpy.uint32)
@@ -370,7 +284,6 @@ class Connectivity3DWidget(ipywidgets.VBox, TVBWidgetPOC):
             node_color = _CMAP_NODE_COLORS.get(cmap_name, 0x6aa84f)
             self._k3d_points.color = node_color
 
-        # --- Edge per-vertex colors from mean incident weight ---------------
         n_regions = self.connectivity.number_of_regions
         vertex_weights = numpy.zeros(n_regions, dtype=numpy.float64)
         counts = numpy.zeros(n_regions, dtype=numpy.int64)
@@ -396,8 +309,7 @@ class Connectivity3DWidget(ipywidgets.VBox, TVBWidgetPOC):
 
         self._k3d_lines.colors = colors_uint32
 
-        self.logger.debug(f"Colormap changed to '{cmap_name}'."
-    )
+        self.logger.debug(f"Colormap changed to '{cmap_name}'.")
 
     def _on_hemisphere_change(self, change):
         """Show Left, Right, or Both hemispheres — filters nodes and edges."""
@@ -406,11 +318,6 @@ class Connectivity3DWidget(ipywidgets.VBox, TVBWidgetPOC):
 
         hemi = change['new']
 
-        # --- Node visibility via per-point colors -----------------------
-        # k3d Points has no per-point visibility flag.  We implement it by
-        # setting invisible nodes to PLOT_BG_COLOR (0x1a1a2e — dark navy,
-        # same as the k3d background) making them effectively invisible.
-        # This is flicker-free and fully reversible without plot rebuild.
         n = self.connectivity.number_of_regions
         cmap_name = self._colormap_dropdown.value
         node_color = _CMAP_NODE_COLORS.get(cmap_name, 0x6aa84f)
@@ -424,10 +331,6 @@ class Connectivity3DWidget(ipywidgets.VBox, TVBWidgetPOC):
 
         self._k3d_points.colors = node_colors
 
-        # --- Edge filtering via combined mask ---------------------------
-        # Pass hemi explicitly: when this callback fires, _hemisphere_toggle
-        # has already been updated by ipywidgets, but we pass it explicitly
-        # anyway so direct test calls also work correctly.
         mask = self._get_active_mask(hemi_override=hemi)
         self._apply_edge_mask(mask)
 
@@ -439,7 +342,6 @@ class Connectivity3DWidget(ipywidgets.VBox, TVBWidgetPOC):
             return
 
         if change['new']:
-            # Show labels for top-10 hub regions (highest normalised strength)
             top_hub_indices = numpy.argsort(self._node_strengths)[-10:]
             for idx in top_hub_indices:
                 pos = self._to_float32(self.connectivity.centres[idx])
@@ -460,9 +362,7 @@ class Connectivity3DWidget(ipywidgets.VBox, TVBWidgetPOC):
             self._k3d_labels = []
             self.logger.debug("Labels cleared.")
 
-    # ====================================================================
-    # Internal helpers
-    # ====================================================================
+            self.logger.debug("Labels cleared.")
 
     def _apply_edge_mask(self, mask):
         """
@@ -484,8 +384,6 @@ class Connectivity3DWidget(ipywidgets.VBox, TVBWidgetPOC):
         else:
             rows = self._edge_rows[mask]
             cols = self._edge_cols[mask]
-            # k3d lines (indices_type='segment') expects a FLAT uint32 array
-            # of shape (E*2,) — each consecutive pair [i, j] is one segment.
             self._k3d_lines.indices = (
                 numpy.column_stack([rows, cols])
                 .astype(numpy.uint32)
@@ -501,7 +399,6 @@ class Connectivity3DWidget(ipywidgets.VBox, TVBWidgetPOC):
 
         total = len(self._weights_norm)
         if n_visible is None:
-            # Called after first load — all connections visible
             n_visible = total
 
         info = self.get_connectivity_info()
@@ -514,10 +411,6 @@ class Connectivity3DWidget(ipywidgets.VBox, TVBWidgetPOC):
             f'</span>'
         )
 
-    # ====================================================================
-    # Core rendering (called once by add_datatype)
-    # ====================================================================
-
     def _render_connectivity(self):
         """
         Build k3d nodes and edges and add them to the plot.
@@ -529,7 +422,6 @@ class Connectivity3DWidget(ipywidgets.VBox, TVBWidgetPOC):
 
         centres_f32 = self._to_float32(self.connectivity.centres)
 
-        # ---- Nodes — hub-sized and viridis-coloured by node strength ------
         node_strength = self.connectivity.weights.sum(axis=1)   # (N,) float64
         strength_norm = (
             (node_strength - node_strength.min())
@@ -539,7 +431,6 @@ class Connectivity3DWidget(ipywidgets.VBox, TVBWidgetPOC):
         self._node_sizes     = node_sizes
         self._node_strengths = strength_norm
 
-        # Per-node viridis colors from node strength
         cmap_init = plt.get_cmap('viridis')
         rgba_init = cmap_init(strength_norm)                     # (N, 4)
         r_i = (rgba_init[:, 0] * 255).astype(numpy.uint32)
@@ -559,13 +450,12 @@ class Connectivity3DWidget(ipywidgets.VBox, TVBWidgetPOC):
         )
         self._k3d_points = points
 
-        # ---- Edges -------------------------------------------------------
         rows, cols = numpy.nonzero(self.connectivity.weights)
 
         edge_indices = (
             numpy.column_stack([rows, cols])
             .astype(numpy.uint32)
-            .flatten()          # (E*2,) flat — required shape for live updates
+            .flatten()
         )
 
         weights_flat = self.connectivity.weights[rows, cols]
@@ -586,7 +476,6 @@ class Connectivity3DWidget(ipywidgets.VBox, TVBWidgetPOC):
         self._edge_cols   = cols
         self._weights_norm = weights_norm
 
-        # ---- Add to plot -------------------------------------------------
         self.plot += self._k3d_points
         self.plot += self._k3d_lines
 
