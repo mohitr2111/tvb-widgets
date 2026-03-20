@@ -230,7 +230,7 @@ class AnimatedSurface3DWidget(ipywidgets.VBox, TVBWidgetPOC):
 
         self._play = ipywidgets.Play(
             min=0, max=n_frames - 1, step=1, value=0,
-            interval=83,        # ≈ 12 fps
+            interval=67,        # ≈ 15 fps
             description='▶',
             disabled=True,      # enabled after data loads
         )
@@ -309,7 +309,7 @@ class AnimatedSurface3DWidget(ipywidgets.VBox, TVBWidgetPOC):
 
     def _on_speed_change(self, change):
         """Adjust playback speed by mutating Play.interval (ms per frame)."""
-        self._play.interval = int(83 / change['new'])
+        self._play.interval = int(67 / change['new'])
 
     def _update_controls_state(self, enabled):
         """
